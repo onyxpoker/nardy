@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Нарды</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#1c1c20);--fg:var(--tg-theme-text-color,#f2f2f2);--hint:var(--tg-theme-hint-color,#9aa0a6);
+--btn:var(--tg-theme-button-color,#3b82f6);--btnfg:var(--tg-theme-button-text-color,#fff);--sec:var(--tg-theme-secondary-bg-color,#2a2a30)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.35 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+#app{max-width:480px;margin:0 auto;padding:12px 10px calc(12px + env(safe-area-inset-bottom));min-height:100vh;display:flex;flex-direction:column;gap:10px}
+h1{margin:8px 0 0;font-size:26px;text-align:center}
+.sub{color:var(--hint);text-align:center;margin:0 0 6px}
+.btn{border:0;border-radius:12px;padding:13px 16px;font:600 16px inherit;background:var(--btn);color:var(--btnfg);width:100%;cursor:pointer}
+.btn.sec{background:var(--sec);color:var(--fg)}
+.btn:disabled{opacity:.4}
+.btn.small{padding:8px 12px;font-size:14px;width:auto}
+.row2{display:flex;gap:8px}
+.card{background:var(--sec);border-radius:14px;padding:14px}
+input{width:100%;padding:12px;border-radius:10px;border:1px solid #555;background:transparent;color:var(--fg);font:600 18px monospace;text-transform:uppercase;letter-spacing:3px;text-align:center}
+details{color:var(--hint);font-size:14px} summary{cursor:pointer;padding:4px 0} details p{margin:6px 0}
+.code{font:700 38px monospace;letter-spacing:6px;text-align:center;margin:6px 0}
+.hide{display:none!important}
+#toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:#e5484d;color:#fff;padding:8px 14px;border-radius:10px;z-index:9;font-size:14px}
+/* игра */
+.bar-top,.bar-bot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 4px}
+.who{display:flex;align-items:center;gap:8px;min-width:0;font-weight:600}
+.who span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:#555;flex:none}.dot.on{background:#3fb950}
+.turn{outline:2px solid var(--btn);outline-offset:3px;border-radius:8px}
+.meta{color:var(--hint);font-size:13px;white-space:nowrap}
+.board{background:#5a3a1e;border-radius:12px;padding:6px;box-shadow:inset 0 0 0 3px #3b2412}
+.half{display:grid;grid-template-columns:repeat(12,1fr);height:min(30vh,175px)}
+.pt{position:relative;display:flex;flex-direction:column;align-items:center;cursor:pointer}
+.top .pt{justify-content:flex-start}.bot .pt{justify-content:flex-end}
+.pt::before{content:"";position:absolute;inset:0;background:#d2b07a;clip-path:polygon(0 0,100% 0,50% 100%)}
+.bot .pt::before{clip-path:polygon(0 100%,100% 100%,50% 0)}
+.pt:nth-child(even)::before{background:#8f3b2b}
+.pt.can::after,.pt.sel::after{content:"";position:absolute;inset:0;border-radius:6px;box-shadow:inset 0 0 0 2px #ffd84a;z-index:2;pointer-events:none}
+.pt.sel::after{box-shadow:inset 0 0 0 3px #fff}
+.pt.dst::after{content:"";position:absolute;left:50%;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#3fb950;box-shadow:0 0 0 3px rgba(63,185,80,.35);z-index:3;pointer-events:none;inset:auto auto auto 50%}
+.top .pt.dst::after{top:6px}.bot .pt.dst::after{bottom:6px}
+.ck{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;width:calc(100% - 3px);max-width:30px;aspect-ratio:1;border-radius:50%;margin:1px 0;font:700 12px inherit;font-style:normal;box-shadow:0 1px 2px rgba(0,0,0,.5)}
+.ck.w{background:radial-gradient(circle at 35% 30%,#fff,#d9d2c3);color:#333}
+.ck.b{background:radial-gradient(circle at 35% 30%,#555,#18181a);color:#eee}
+.mid{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:58px;padding:4px 2px}
+.dice{display:flex;gap:8px;align-items:center;justify-content:center;flex:1;flex-wrap:wrap}
+.die{width:38px;height:38px;border-radius:9px;background:#fff;color:#111;font:800 22px inherit;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,.4)}
+.die.used{opacity:.3}
+.bar{min-width:54px;padding:5px 8px;border-radius:10px;background:rgba(0,0,0,.25);display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;justify-content:center;cursor:default}
+.bar .ck{width:20px;margin:0}
+.bar.can{outline:2px solid #ffd84a;cursor:pointer}.bar.sel{outline:3px solid #fff}
+.status{text-align:center;min-height:22px;color:var(--hint)}
+.status b{color:var(--fg)}
+.actions{display:flex;gap:8px}
+.over{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:5;padding:20px}
+.over .card{width:100%;max-width:340px;text-align:center;display:flex;flex-direction:column;gap:10px}
+.over h2{margin:0;font-size:26px}
+.btn.offbtn{background:#2e9d4a}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Лобби -->
+  <section id="lobby" class="hide" style="display:flex;flex-direction:column;gap:10px">
+    <h1>🎲 Нарды</h1>
+    <p class="sub">Играйте с друзьями в Telegram</p>
+    <button class="btn" data-create="short">Короткие нарды</button>
+    <button class="btn" data-create="long">Длинные нарды</button>
+    <div class="card">
+      <div style="margin-bottom:8px;color:var(--hint);font-size:14px">Есть код комнаты?</div>
+      <div class="row2"><input id="codeIn" maxlength="5" placeholder="КОД" autocomplete="off"><button class="btn small" id="joinBtn" style="min-width:90px">Войти</button></div>
+    </div>
+    <details class="card"><summary>Правила в двух словах</summary>
+      <p><b>Короткие:</b> 15 шашек, начальная расстановка как в backgammon. Одиночную шашку можно «выбить» — она уходит на бар и входит заново. Играть нужно максимум кубиков. Гаммон — 2 очка, бэкгаммон — 3.</p>
+      <p><b>Длинные:</b> все 15 шашек стартуют с «головы» (правый верхний угол), идут против часовой стрелки. Бить нельзя, на занятый соперником пункт ходить нельзя. С головы — одна шашка за ход (в первый ход при дублях 3-3, 4-4, 6-6 — две). Нельзя строить 6 пунктов подряд, если за ними нет шашек соперника. Марс (соперник ничего не снял) — 2 очка.</p>
+    </details>
+  </section>
+
+  <!-- Ожидание соперника -->
+  <section id="wait" class="hide" style="display:flex;flex-direction:column;gap:10px">
+    <h1 id="waitTitle"></h1>
+    <p class="sub">Отправьте другу ссылку или код</p>
+    <div class="card"><div class="code" id="waitCode"></div></div>
+    <button class="btn" id="shareBtn">📨 Пригласить друга</button>
+    <button class="btn sec" id="copyBtn">Скопировать ссылку</button>
+    <button class="btn sec" data-leave>Отмена</button>
+  </section>
+
+  <!-- Игра -->
+  <section id="game" class="hide" style="display:flex;flex-direction:column;gap:8px">
+    <div class="bar-top"><div class="who" id="oppWho"></div><div class="meta" id="oppMeta"></div></div>
+    <div class="board">
+      <div class="half top" id="topRow"></div>
+      <div class="mid"><div class="bar" id="oppBar"></div><div class="dice" id="dice"></div><div class="bar" id="myBar" data-bar></div></div>
+      <div class="half bot" id="botRow"></div>
+    </div>
+    <div class="bar-bot"><div class="who" id="meWho"></div><div class="meta" id="meMeta"></div></div>
+    <div class="status" id="status"></div>
+    <button class="btn offbtn hide" id="offBtn">⬇ Снять шашку</button>
+    <div class="actions">
+      <button class="btn" id="rollBtn">🎲 Бросить кубики</button>
+      <button class="btn sec small" id="undoBtn">↩</button>
+      <button class="btn sec small" id="resignBtn">🏳</button>
+    </div>
+  </section>
+</div>
+<div id="toast" class="hide"></div>
+<div id="over" class="over hide"></div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction, increment, serverTimestamp, Timestamp }
+  from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { firebaseConfig, BOT_APP_LINK } from './firebase-config.js';
+import { newGame, roll, doMove, undo, resign, viewFor, OPP } from './game.js';
+
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const qs = new URLSearchParams(location.search);
+const $ = (id) => document.getElementById(id);
+let st = null, sel = null, rdoc = null, code = null, unsub = null, authed = false;
+const KEY = 'nardy_room';
+
+// Личность: Telegram-пользователь (или ?u=Имя для проверки в браузере, или случайный гость)
+const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+let guest = localStorage.getItem('nardy_guest');
+if (!guest) { guest = Math.random().toString(36).slice(2, 8); localStorage.setItem('nardy_guest', guest); }
+const devName = qs.get('u');
+const myId = tgUser ? 'tg:' + tgUser.id : devName ? 'dev:' + devName : 'guest:' + guest;
+const myName = tgUser ? ([tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || tgUser.username || 'Игрок') : devName || 'Гость';
+
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.remove('hide'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hide'), 3000); }
+function haptic(k) { try { tg.HapticFeedback.impactOccurred(k || 'light'); } catch {} }
+function fail(msg) { document.body.innerHTML = '<p style="padding:30px;text-align:center">' + msg + '</p>'; }
+
+if (String(firebaseConfig.apiKey).startsWith('PASTE')) fail('Не заполнен public/firebase-config.js — вставьте конфиг Firebase.');
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const ref = (c) => doc(db, 'rooms', c);
+const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const newCode = () => Array.from({ length: 5 }, () => ALPHA[Math.floor(Math.random() * ALPHA.length)]).join('');
+const invite = (c) => (BOT_APP_LINK ? BOT_APP_LINK + '?startapp=' + c : location.origin + '/?code=' + c);
+const myColor = () => (!rdoc ? null : rdoc.p.w.id === myId ? 'w' : rdoc.p.b && rdoc.p.b.id === myId ? 'b' : null);
+
+function build() {
+  const c = myColor();
+  if (!c) { cleanup(); return; }
+  const o = OPP(c), opp = rdoc.p[o];
+  const g = rdoc.g ? JSON.parse(rdoc.g) : null;
+  st = {
+    room: { code, variant: rdoc.variant, status: g ? 'playing' : 'waiting', link: invite(code),
+      score: { me: rdoc.score[c], opp: rdoc.score[o] }, me: { name: rdoc.p[c].name }, opp: opp ? { name: opp.name, online: true } : null },
+    game: g ? viewFor(g, c) : null,
+  };
+  sel = null; render();
+}
+function cleanup() { if (unsub) unsub(); unsub = null; code = null; rdoc = null; st = null; localStorage.removeItem(KEY); render(); }
+
+function subscribe(c) {
+  if (unsub) unsub();
+  code = c; localStorage.setItem(KEY, c);
+  unsub = onSnapshot(ref(c), (snap) => {
+    if (!snap.exists()) { cleanup(); toast('Комната закрыта'); return; }
+    rdoc = snap.data(); build();
+  }, () => toast('Нет связи с Firebase'));
+}
+
+async function leave() {
+  const c = code;
+  if (unsub) unsub(); unsub = null; code = null; rdoc = null; localStorage.removeItem(KEY);
+  if (c) { try { await deleteDoc(ref(c)); } catch {} }
+}
+async function create(variant) {
+  if (!['short', 'long'].includes(variant)) return;
+  await leave();
+  let c; do { c = newCode(); } while ((await getDoc(ref(c))).exists());
+  await setDoc(ref(c), { variant, p: { w: { id: myId, name: myName }, b: null }, g: null, score: { w: 0, b: 0 },
+    created: serverTimestamp(), expireAt: Timestamp.fromMillis(Date.now() + 2 * 864e5) });
+  subscribe(c);
+}
+async function join(raw) {
+  const c = String(raw || '').toUpperCase().trim();
+  if (!c) return;
+  if (code && code !== c) await leave();
+  await runTransaction(db, async (tx) => {
+    const s = await tx.get(ref(c));
+    if (!s.exists()) throw new Error('Комната не найдена');
+    const d = s.data();
+    if (d.p.w.id === myId || (d.p.b && d.p.b.id === myId)) return;
+    if (d.p.b) throw new Error('В комнате уже двое');
+    tx.update(ref(c), { 'p.b': { id: myId, name: myName }, g: JSON.stringify(newGame(d.variant, Math.random() < 0.5 ? 'w' : 'b')) });
+  });
+  subscribe(c);
+}
+function commit(g) {
+  const upd = {};
+  if (g.phase === 'over' && !g.scored) { g.scored = true; upd['score.' + g.winner] = increment(g.result.points); }
+  upd.g = JSON.stringify(g);
+  return updateDoc(ref(code), upd);
+}
+async function handle(m) {
+  if (!authed) return;
+  if (m.t === 'create') return create(m.variant);
+  if (m.t === 'join') return join(m.code);
+  if (m.t === 'leave') { await leave(); st = null; render(); return; }
+  if (!rdoc || !rdoc.g) return;
+  const g = JSON.parse(rdoc.g), c = myColor();
+  if (m.t === 'rematch') {
+    return runTransaction(db, async (tx) => {
+      const d = (await tx.get(ref(code))).data(), cur = JSON.parse(d.g);
+      if (cur.phase === 'over') tx.update(ref(code), { g: JSON.stringify(newGame(d.variant, OPP(cur.winner))) }); // начинает проигравший
+    });
+  }
+  if (m.t === 'resign') { if (g.phase === 'over') return; resign(g, c); return commit(g); }
+  if (g.turn !== c) return;
+  if (m.t === 'roll') { if (!roll(g)) return; }
+  else if (m.t === 'move') { if (!doMove(g, m.from, m.die)) return; }
+  else if (m.t === 'undo') { if (!undo(g)) return; }
+  else return;
+  return commit(g);
+}
+const send = (m) => handle(m).catch((e) => toast(e.message || 'Ошибка'));
+
+signInAnonymously(auth).then(() => {
+  authed = true;
+  const start = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || qs.get('code');
+  if (start) return send({ t: 'join', code: start });
+  const saved = localStorage.getItem(KEY);
+  if (saved) subscribe(saved);
+}).catch((e) => fail('Не удалось подключиться к Firebase (' + (e.code || e.message) + '). Проверьте, что включён Anonymous-вход.'));
+
+const VN = { short: 'Короткие нарды', long: 'Длинные нарды' };
+function show(id) { for (const s of ['lobby', 'wait', 'game']) $(s).classList.toggle('hide', s !== id); }
+
+function render() {
+  if (!st) { show('lobby'); $('over').classList.add('hide'); return; }
+  if (st.room.status === 'waiting') {
+    show('wait'); $('waitTitle').textContent = VN[st.room.variant]; $('waitCode').textContent = st.room.code; return;
+  }
+  show('game'); renderGame();
+}
+
+function dieEls(vals, usedMask) { return vals.map((v, i) => `<div class="die ${usedMask && usedMask[i] ? 'used' : ''}">${v}</div>`).join(''); }
+
+function renderGame() {
+  const { room, game: g } = st;
+  const myTurn = g.turn === g.myColor && g.phase !== 'over';
+  const L = g.legal || [];
+  const froms = new Set(L.map((m) => m.from));
+  const dsts = new Set(L.filter((m) => m.from === sel).map((m) => m.to));
+
+  const pt = (p) => {
+    const cell = g.board[p - 1], n = cell ? cell.n : 0;
+    let h = '';
+    for (let i = 0; i < Math.min(n, 5); i++) h += `<i class="ck ${cell.c}">${i === 4 && n > 5 ? n : ''}</i>`;
+    const cls = 'pt' + (froms.has(p) && sel !== p ? ' can' : '') + (sel === p ? ' sel' : '') + (dsts.has(p) ? ' dst' : '');
+    return `<div class="${cls}" data-p="${p}">${h}</div>`;
+  };
+  let top = '', bot = '';
+  for (let p = 13; p <= 24; p++) top += pt(p);
+  for (let p = 12; p >= 1; p--) bot += pt(p);
+  $('topRow').innerHTML = top; $('botRow').innerHTML = bot;
+
+  const oc = g.myColor === 'w' ? 'b' : 'w';
+  const barHtml = (n, c) => (g.variant === 'short' ? `<i class="ck ${c}"></i>×${n}` : '');
+  $('oppBar').innerHTML = barHtml(g.bar.opp, oc); $('myBar').innerHTML = barHtml(g.bar.me, g.myColor);
+  $('oppBar').style.visibility = $('myBar').style.visibility = g.variant === 'short' ? 'visible' : 'hidden';
+  $('myBar').className = 'bar' + (froms.has('bar') && sel !== 'bar' ? ' can' : '') + (sel === 'bar' ? ' sel' : '');
+
+  // кубики
+  let dh = '';
+  if (g.phase === 'move') {
+    const left = g.dice.slice();
+    dh = dieEls(g.rolled, g.rolled.map((v) => { const i = left.indexOf(v); if (i >= 0) { left.splice(i, 1); return false; } return true; }));
+  } else if (g.lastRoll) dh = dieEls(g.lastRoll.dice, g.lastRoll.dice.map(() => true));
+  $('dice').innerHTML = dh;
+
+  // шапки
+  const turnOpp = g.turn === oc && g.phase !== 'over';
+  $('oppWho').innerHTML = `<i class="dot ${room.opp && room.opp.online ? 'on' : ''}"></i><span>${esc(room.opp ? room.opp.name : '…')}</span>`;
+  $('oppWho').classList.toggle('turn', turnOpp);
+  $('oppMeta').textContent = `снято ${g.off.opp}/15`;
+  $('meWho').innerHTML = `<i class="ck ${g.myColor}" style="width:18px;margin:0"></i><span>${esc(room.me.name)} (ты)</span>`;
+  $('meWho').classList.toggle('turn', myTurn);
+  $('meMeta').textContent = `снято ${g.off.me}/15 · счёт ${room.score.me}:${room.score.opp}`;
+
+  // статус и кнопки
+  let s = '';
+  if (g.phase === 'roll') s = myTurn ? '<b>Твой ход</b> — бросай кубики' : `Ходит <b>${esc(room.opp.name)}</b>`;
+  else if (g.phase === 'move') s = myTurn ? (sel === null ? 'Выбери шашку' : 'Выбери, куда пойти') : `<b>${esc(room.opp.name)}</b> думает…`;
+  if (g.lastRoll && g.lastRoll.skipped && g.phase === 'roll') s = (g.lastRoll.by === g.myColor ? 'У тебя нет ходов. ' : 'У соперника нет ходов. ') + s;
+  $('status').innerHTML = s;
+  $('rollBtn').classList.toggle('hide', !(myTurn && g.phase === 'roll'));
+  $('undoBtn').classList.toggle('hide', !g.canUndo);
+  $('offBtn').classList.toggle('hide', !dsts.has('off'));
+  $('resignBtn').classList.toggle('hide', g.phase === 'over');
+
+  // конец партии
+  const ov = $('over');
+  if (g.phase === 'over') {
+    const won = g.winner === g.myColor, r = g.result;
+    ov.innerHTML = `<div class="card"><h2>${won ? '🏆 Победа!' : 'Поражение'}</h2>
+      <div>${won ? '+' : '−'}${r.points} ${r.label ? '(' + r.label + ')' : ''}</div>
+      <div style="color:var(--hint)">Счёт: ${room.score.me} : ${room.score.opp}</div>
+      <button class="btn" id="rematch">Реванш</button><button class="btn sec" data-leave>В меню</button></div>`;
+    ov.classList.remove('hide');
+  } else ov.classList.add('hide');
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function pick(from, to) {
+  const moves = st.game.legal.filter((m) => m.from === from && m.to === to).sort((a, b) => a.die - b.die);
+  if (!moves.length) return false;
+  send({ t: 'move', from, die: moves[0].die }); haptic(); return true;
+}
+function tapFrom(from) {
+  const L = st.game.legal;
+  if (sel === from) sel = null;
+  else if (L.some((m) => m.from === from)) { sel = from; haptic('light'); }
+  else sel = null;
+  render();
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-create],[data-leave],[data-p],[data-bar],button');
+  if (!t) return;
+  if (t.dataset.create) return send({ t: 'create', variant: t.dataset.create });
+  if ('leave' in t.dataset) return send({ t: 'leave' });
+  if (!st || st.room.status !== 'playing') return;
+  const g = st.game;
+  if (t.dataset.p) {
+    const p = Number(t.dataset.p);
+    if (sel !== null && pick(sel, p)) return;
+    return tapFrom(p);
+  }
+  if ('bar' in t.dataset) return tapFrom('bar');
+});
+$('joinBtn').onclick = () => { const c = $('codeIn').value.trim(); if (c) send({ t: 'join', code: c }); };
+$('rollBtn').onclick = () => send({ t: 'roll' });
+$('undoBtn').onclick = () => send({ t: 'undo' });
+$('offBtn').onclick = () => { if (sel !== null) pick(sel, 'off'); };
+$('resignBtn').onclick = () => { if (confirm('Сдаться?')) send({ t: 'resign' }); };
+document.addEventListener('click', (e) => { if (e.target.id === 'rematch') send({ t: 'rematch' }); });
+$('shareBtn').onclick = () => {
+  const link = st.room.link, text = `Сыграем в ${VN[st.room.variant].toLowerCase()}? Код комнаты ${st.room.code}`;
+  const url = 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text);
+  if (tg && tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
+};
+$('copyBtn').onclick = async () => { try { await navigator.clipboard.writeText(st.room.link); toast('Ссылка скопирована'); } catch { toast(st.room.link); } };
+
+</script>
+</body>
+</html>
