@@ -353,6 +353,8 @@ $('shareBtn').onclick = () => {
 };
 $('copyBtn').onclick = async () => { try { await navigator.clipboard.writeText(st.room.link); toast('Ссылка скопирована'); } catch { toast(st.room.link); } };
 
+
+render(); // показать лобби сразу при открытии
 </script>
 </body>
 </html>
