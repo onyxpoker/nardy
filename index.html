@@ -60,13 +60,19 @@ details{color:var(--hint);font-size:14px} summary{cursor:pointer;padding:4px 0} 
 .over h2{margin:0;font-size:26px}
 .btn.offbtn{background:#2e9d4a}
 </style>
+<script>
+function setNet(t,ok){var e=document.getElementById('net');if(!e)return;e.textContent=t;e.style.color=ok===true?'#3fb950':ok===false?'#ff6b6b':'';}
+window.addEventListener('error',function(ev){setNet('❌ Ошибка загрузки: '+(ev.message||'не удалось загрузить скрипт Firebase (нет доступа к gstatic.com?)'),false)});
+window.addEventListener('unhandledrejection',function(ev){setNet('❌ Ошибка: '+((ev.reason&&ev.reason.message)||ev.reason),false)});
+</script>
 </head>
 <body>
 <div id="app">
   <!-- Лобби -->
-  <section id="lobby" class="hide" style="display:flex;flex-direction:column;gap:10px">
+  <section id="lobby" style="display:flex;flex-direction:column;gap:10px">
     <h1>🎲 Нарды</h1>
     <p class="sub">Играйте с друзьями в Telegram</p>
+    <div id="net" class="sub" style="font-weight:600">⏳ Загрузка…</div>
     <button class="btn" data-create="short">Короткие нарды</button>
     <button class="btn" data-create="long">Длинные нарды</button>
     <div class="card">
@@ -112,39 +118,283 @@ details{color:var(--hint);font-size:14px} summary{cursor:pointer;padding:4px 0} 
 
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction, increment, serverTimestamp, Timestamp }
   from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
-import { firebaseConfig, BOT_APP_LINK } from './firebase-config.js';
-import { newGame, roll, doMove, undo, resign, viewFor, OPP } from './game.js';
 
+// ============ 1. ВСТАВЬТЕ СЮДА КОНФИГ FIREBASE ============
+// Firebase Console → шестерёнка → Project settings → Your apps → Web app → firebaseConfig
+const firebaseConfig = {
+  apiKey: 'PASTE_API_KEY',
+  authDomain: 'PASTE_PROJECT.firebaseapp.com',
+  projectId: 'PASTE_PROJECT',
+  storageBucket: 'PASTE_PROJECT.appspot.com',
+  messagingSenderId: 'PASTE',
+  appId: 'PASTE',
+};
+// Прямая ссылка на Mini App из BotFather (/newapp), например https://t.me/my_nardy_bot/play. Можно оставить пустой.
+const BOT_APP_LINK = '';
+// ===========================================================
+
+// ============ 2. ПРАВИЛА ИГРЫ ============
+// Игровая логика: короткие и длинные нарды. Сервер — единственный источник правды.
+// Для каждого игрока позиции хранятся в его собственной системе координат ("rel"):
+// шашки идут от 24 к 1, дом — пункты 1..6, затем снятие. Бар (только короткие) входит на 25-d.
+
+const OPP = (c) => (c === 'w' ? 'b' : 'w');
+
+// rel игрока -> абсолютный пункт доски
+function toAbs(v, c, p) {
+  if (c === 'w') return p;
+  return v === 'short' ? 25 - p : ((p - 1 + 12) % 24) + 1;
+}
+// абсолютный пункт -> rel игрока
+function toRel(v, c, a) {
+  if (c === 'w') return a;
+  return v === 'short' ? 25 - a : ((a + 11) % 24) + 1;
+}
+
+const emptyPts = () => Array(25).fill(0);
+
+function newGame(variant, starter) {
+  const w = emptyPts(), b = emptyPts();
+  if (variant === 'short') {
+    for (const pts of [w, b]) { pts[24] = 2; pts[13] = 5; pts[8] = 3; pts[6] = 5; }
+  } else {
+    w[24] = 15; b[24] = 15;
+  }
+  return {
+    variant, turn: starter, phase: 'roll',
+    pos: { w, b }, bar: { w: 0, b: 0 }, off: { w: 0, b: 0 },
+    dice: [], rolled: [], headTaken: 0, headLimit: 1,
+    firstTurn: { w: true, b: true },
+    history: [], lastRoll: null, winner: null, result: null,
+  };
+}
+
+const clone = (g) => ({
+  variant: g.variant,
+  pos: { w: g.pos.w.slice(), b: g.pos.b.slice() },
+  bar: { ...g.bar }, off: { ...g.off },
+  dice: g.dice.slice(), headTaken: g.headTaken, headLimit: g.headLimit,
+});
+const key = (g, c) =>
+  c + g.pos.w.join() + '|' + g.pos.b.join() + '|' + g.bar.w + g.bar.b + '|' + g.off.w + g.off.b +
+  '|' + g.dice.slice().sort().join('') + '|' + g.headTaken;
+const rm = (arr, d) => { const i = arr.indexOf(d); if (i >= 0) arr.splice(i, 1); };
+
+// сколько шашек соперника стоит на пункте p (в системе координат игрока c)
+function occOpp(g, c, p) {
+  const o = OPP(c), v = g.variant;
+  return g.pos[o][toRel(v, o, toAbs(v, c, p))];
+}
+function allHome(g, c) {
+  if (g.bar[c] > 0) return false;
+  for (let p = 7; p <= 24; p++) if (g.pos[c][p] > 0) return false;
+  return true;
+}
+
+// Длинные: нельзя строить 6 подряд занятых пунктов, если впереди блока нет шашек соперника
+function wallIllegal(g, c, mine) {
+  const v = g.variant, o = OPP(c);
+  let run = 0;
+  for (let p = 24; p >= 1; p--) {
+    if (mine[p] > 0) {
+      run++;
+      if (run >= 6) {
+        const rels = [];
+        for (let k = 0; k < 6; k++) rels.push(toRel(v, o, toAbs(v, c, p + k)));
+        const mn = Math.min(...rels), mx = Math.max(...rels);
+        if (mx - mn !== 5) continue; // блок «переламывается» на пути соперника — не стена
+        let ahead = g.off[o] > 0;
+        for (let q = 1; q < mn && !ahead; q++) if (g.pos[o][q] > 0) ahead = true;
+        if (!ahead) return true;
+      }
+    } else run = 0;
+  }
+  return false;
+}
+
+function movesForDie(g, c, d) {
+  const v = g.variant, res = [], mine = g.pos[c];
+  if (v === 'short' && g.bar[c] > 0) {
+    const to = 25 - d;
+    if (occOpp(g, c, to) < 2) res.push({ from: 'bar', to, die: d });
+    return res;
+  }
+  const canOff = allHome(g, c);
+  for (let p = 24; p >= 1; p--) {
+    if (!mine[p]) continue;
+    if (v === 'long' && p === 24 && g.headTaken >= g.headLimit) continue;
+    const to = p - d;
+    let m = null;
+    if (to >= 1) {
+      const oc = occOpp(g, c, to);
+      if (v === 'short' ? oc < 2 : oc === 0) m = { from: p, to, die: d };
+    } else if (canOff) {
+      let higher = false;
+      for (let q = p + 1; q <= 24; q++) if (mine[q] > 0) { higher = true; break; }
+      if (to === 0 || !higher) m = { from: p, to: 'off', die: d };
+    }
+    if (!m) continue;
+    if (v === 'long') {
+      const t = mine.slice(); t[p]--; if (m.to !== 'off') t[m.to]++;
+      if (wallIllegal(g, c, t)) continue;
+    }
+    res.push(m);
+  }
+  return res;
+}
+
+function applyMove(g, c, m) {
+  const o = OPP(c), v = g.variant;
+  if (m.from === 'bar') g.bar[c]--;
+  else { g.pos[c][m.from]--; if (v === 'long' && m.from === 24) g.headTaken++; }
+  if (m.to === 'off') g.off[c]++;
+  else {
+    g.pos[c][m.to]++;
+    if (v === 'short') {
+      const q = toRel(v, o, toAbs(v, c, m.to));
+      if (g.pos[o][q] === 1) { g.pos[o][q] = 0; g.bar[o]++; }
+    }
+  }
+}
+
+const allMoves = (g, c) => {
+  const out = [];
+  for (const d of new Set(g.dice)) out.push(...movesForDie(g, c, d));
+  return out;
+};
+
+// Правило «играть максимум кубиков; если можно сыграть только один — больший»
+function legalMoves(g) {
+  if (g.phase !== 'move' || !g.dice.length) return [];
+  const c = g.turn, memo = new Map();
+  const depth = (h) => {
+    const k = key(h, c);
+    if (memo.has(k)) return memo.get(k);
+    let best = 0;
+    for (const m of allMoves(h, c)) {
+      const n = clone(h); applyMove(n, c, m); rm(n.dice, m.die);
+      best = Math.max(best, 1 + depth(n));
+      if (best === h.dice.length) break;
+    }
+    memo.set(k, best);
+    return best;
+  };
+  const ms = allMoves(g, c);
+  if (!ms.length) return [];
+  const scored = ms.map((m) => { const n = clone(g); applyMove(n, c, m); rm(n.dice, m.die); return { m, d: 1 + depth(n) }; });
+  const best = Math.max(...scored.map((s) => s.d));
+  let res = scored.filter((s) => s.d === best).map((s) => s.m);
+  if (best === 1 && g.dice.length === 2 && g.dice[0] !== g.dice[1]) {
+    const mx = Math.max(...g.dice);
+    const hi = res.filter((m) => m.die === mx);
+    if (hi.length) res = hi;
+  }
+  return res;
+}
+
+function endTurn(g, skipped) {
+  g.lastRoll = { by: g.turn, dice: g.rolled.slice(), skipped };
+  g.firstTurn[g.turn] = false;
+  g.turn = OPP(g.turn); g.phase = 'roll';
+  g.dice = []; g.rolled = []; g.history = []; g.headTaken = 0;
+}
+
+function roll(g, rnd = () => 1 + Math.floor(Math.random() * 6)) {
+  if (g.phase !== 'roll') return false;
+  const a = rnd(), b = rnd();
+  g.rolled = [a, b];
+  g.dice = a === b ? [a, a, a, a] : [a, b];
+  g.phase = 'move'; g.headTaken = 0; g.history = [];
+  g.headLimit = g.variant === 'long' && g.firstTurn[g.turn] && a === b && [3, 4, 6].includes(a) ? 2 : 1;
+  if (!legalMoves(g).length) endTurn(g, true);
+  return true;
+}
+
+function result(g, w) {
+  const l = OPP(w), v = g.variant;
+  if (g.off[l] > 0) return { points: 1, label: '' };
+  if (v === 'long') return { points: 2, label: 'марс' };
+  let back = g.bar[l] > 0;
+  for (let q = 1; q <= 24 && !back; q++) {
+    if (g.pos[l][q] > 0 && toRel(v, w, toAbs(v, l, q)) <= 6) back = true;
+  }
+  return back ? { points: 3, label: 'бэкгаммон' } : { points: 2, label: 'гаммон' };
+}
+
+function doMove(g, from, die) {
+  if (g.phase !== 'move') return false;
+  const m = legalMoves(g).find((x) => x.from === from && x.die === die);
+  if (!m) return false;
+  const c = g.turn;
+  g.history.push({ pos: { w: g.pos.w.slice(), b: g.pos.b.slice() }, bar: { ...g.bar }, off: { ...g.off },
+    dice: g.dice.slice(), headTaken: g.headTaken });
+  applyMove(g, c, m); rm(g.dice, die);
+  if (g.off[c] === 15) { g.phase = 'over'; g.winner = c; g.result = result(g, c); g.dice = []; return true; }
+  if (!g.dice.length || !legalMoves(g).length) endTurn(g, false);
+  return true;
+}
+
+function undo(g) {
+  if (g.phase !== 'move' || !g.history.length) return false;
+  const s = g.history.pop();
+  g.pos = s.pos; g.bar = s.bar; g.off = s.off; g.dice = s.dice; g.headTaken = s.headTaken;
+  return true;
+}
+
+function resign(g, loser) {
+  const w = OPP(loser);
+  g.phase = 'over'; g.winner = w; g.result = { points: 1, label: 'сдача' }; g.dice = [];
+}
+
+// Состояние глазами игрока me: его шашки всегда идут по одной и той же схеме (дом справа внизу)
+function viewFor(g, me) {
+  const o = OPP(me), v = g.variant;
+  const board = [];
+  for (let p = 1; p <= 24; p++) {
+    const mine = g.pos[me][p];
+    if (mine) { board.push({ c: me, n: mine }); continue; }
+    const on = g.pos[o][toRel(v, o, toAbs(v, me, p))];
+    board.push(on ? { c: o, n: on } : null);
+  }
+  const mineTurn = g.turn === me && g.phase === 'move';
+  return {
+    variant: v, myColor: me, turn: g.turn, phase: g.phase, board,
+    bar: { me: g.bar[me], opp: g.bar[o] }, off: { me: g.off[me], opp: g.off[o] },
+    dice: g.dice, rolled: g.rolled, lastRoll: g.lastRoll,
+    legal: mineTurn ? legalMoves(g) : [], canUndo: mineTurn && g.history.length > 0,
+    winner: g.winner, result: g.result,
+  };
+}
+
+// ============ 3. ПРИЛОЖЕНИЕ ============
 const tg = window.Telegram && Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 const qs = new URLSearchParams(location.search);
 const $ = (id) => document.getElementById(id);
-let st = null, sel = null, rdoc = null, code = null, unsub = null, authed = false;
+let st = null, sel = null, rdoc = null, code = null, unsub = null, ready = false;
 const KEY = 'nardy_room';
 
-// Личность: Telegram-пользователь (или ?u=Имя для проверки в браузере, или случайный гость)
 const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
-let guest = localStorage.getItem('nardy_guest');
-if (!guest) { guest = Math.random().toString(36).slice(2, 8); localStorage.setItem('nardy_guest', guest); }
+let guest = null;
+try { guest = localStorage.getItem('nardy_guest'); if (!guest) { guest = Math.random().toString(36).slice(2, 8); localStorage.setItem('nardy_guest', guest); } } catch { guest = 'x' + Math.random().toString(36).slice(2, 7); }
 const devName = qs.get('u');
 const myId = tgUser ? 'tg:' + tgUser.id : devName ? 'dev:' + devName : 'guest:' + guest;
 const myName = tgUser ? ([tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || tgUser.username || 'Игрок') : devName || 'Гость';
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
 
-function toast(t) { const el = $('toast'); el.textContent = t; el.classList.remove('hide'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hide'), 3000); }
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.remove('hide'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hide'), 5000); }
 function haptic(k) { try { tg.HapticFeedback.impactOccurred(k || 'light'); } catch {} }
-function fail(msg) { document.body.innerHTML = '<p style="padding:30px;text-align:center">' + msg + '</p>'; }
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 
-if (String(firebaseConfig.apiKey).startsWith('PASTE')) fail('Не заполнен public/firebase-config.js — вставьте конфиг Firebase.');
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const configured = !String(firebaseConfig.apiKey).startsWith('PASTE');
+let db = null;
+if (configured) db = getFirestore(initializeApp(firebaseConfig));
 const ref = (c) => doc(db, 'rooms', c);
 const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const newCode = () => Array.from({ length: 5 }, () => ALPHA[Math.floor(Math.random() * ALPHA.length)]).join('');
-const invite = (c) => (BOT_APP_LINK ? BOT_APP_LINK + '?startapp=' + c : location.origin + '/?code=' + c);
+const invite = (c) => (BOT_APP_LINK ? BOT_APP_LINK + '?startapp=' + c : location.origin + location.pathname + '?code=' + c);
 const myColor = () => (!rdoc ? null : rdoc.p.w.id === myId ? 'w' : rdoc.p.b && rdoc.p.b.id === myId ? 'b' : null);
 
 function build() {
@@ -159,52 +409,52 @@ function build() {
   };
   sel = null; render();
 }
-function cleanup() { if (unsub) unsub(); unsub = null; code = null; rdoc = null; st = null; localStorage.removeItem(KEY); render(); }
+function cleanup() { if (unsub) unsub(); unsub = null; code = null; rdoc = null; st = null; store.del(KEY); render(); }
 
 function subscribe(c) {
   if (unsub) unsub();
-  code = c; localStorage.setItem(KEY, c);
+  code = c; store.set(KEY, c);
   unsub = onSnapshot(ref(c), (snap) => {
     if (!snap.exists()) { cleanup(); toast('Комната закрыта'); return; }
     rdoc = snap.data(); build();
-  }, () => toast('Нет связи с Firebase'));
+  }, (e) => toast('Нет связи с Firestore: ' + (e.code || e.message)));
 }
 
 async function leave() {
   const c = code;
-  if (unsub) unsub(); unsub = null; code = null; rdoc = null; localStorage.removeItem(KEY);
-  if (c) { try { await deleteDoc(ref(c)); } catch {} }
+  if (unsub) unsub(); unsub = null; code = null; rdoc = null; store.del(KEY);
+  if (c) { try { await withTimeout(deleteDoc(ref(c)), 6000, 'timeout'); } catch {} }
 }
 async function create(variant) {
   if (!['short', 'long'].includes(variant)) return;
   await leave();
-  let c; do { c = newCode(); } while ((await getDoc(ref(c))).exists());
-  await setDoc(ref(c), { variant, p: { w: { id: myId, name: myName }, b: null }, g: null, score: { w: 0, b: 0 },
-    created: serverTimestamp(), expireAt: Timestamp.fromMillis(Date.now() + 2 * 864e5) });
+  let c; do { c = newCode(); } while ((await withTimeout(getDoc(ref(c)), 8000, 'Firestore не отвечает')).exists());
+  await withTimeout(setDoc(ref(c), { variant, p: { w: { id: myId, name: myName }, b: null }, g: null, score: { w: 0, b: 0 },
+    created: serverTimestamp(), expireAt: Timestamp.fromMillis(Date.now() + 2 * 864e5) }), 10000, 'Не удалось создать комнату: Firestore не отвечает');
   subscribe(c);
 }
 async function join(raw) {
   const c = String(raw || '').toUpperCase().trim();
-  if (!c) return;
+  if (!c) throw new Error('Введите код комнаты');
   if (code && code !== c) await leave();
-  await runTransaction(db, async (tx) => {
+  await withTimeout(runTransaction(db, async (tx) => {
     const s = await tx.get(ref(c));
     if (!s.exists()) throw new Error('Комната не найдена');
     const d = s.data();
     if (d.p.w.id === myId || (d.p.b && d.p.b.id === myId)) return;
     if (d.p.b) throw new Error('В комнате уже двое');
     tx.update(ref(c), { 'p.b': { id: myId, name: myName }, g: JSON.stringify(newGame(d.variant, Math.random() < 0.5 ? 'w' : 'b')) });
-  });
+  }), 10000, 'Firestore не отвечает');
   subscribe(c);
 }
 function commit(g) {
   const upd = {};
   if (g.phase === 'over' && !g.scored) { g.scored = true; upd['score.' + g.winner] = increment(g.result.points); }
   upd.g = JSON.stringify(g);
-  return updateDoc(ref(code), upd);
+  return withTimeout(updateDoc(ref(code), upd), 10000, 'Нет связи, ход не сохранён');
 }
 async function handle(m) {
-  if (!authed) return;
+  if (!ready) { toast('Нет подключения к Firebase — см. сообщение вверху'); return; }
   if (m.t === 'create') return create(m.variant);
   if (m.t === 'join') return join(m.code);
   if (m.t === 'leave') { await leave(); st = null; render(); return; }
@@ -213,7 +463,7 @@ async function handle(m) {
   if (m.t === 'rematch') {
     return runTransaction(db, async (tx) => {
       const d = (await tx.get(ref(code))).data(), cur = JSON.parse(d.g);
-      if (cur.phase === 'over') tx.update(ref(code), { g: JSON.stringify(newGame(d.variant, OPP(cur.winner))) }); // начинает проигравший
+      if (cur.phase === 'over') tx.update(ref(code), { g: JSON.stringify(newGame(d.variant, OPP(cur.winner))) });
     });
   }
   if (m.t === 'resign') { if (g.phase === 'over') return; resign(g, c); return commit(g); }
@@ -226,13 +476,25 @@ async function handle(m) {
 }
 const send = (m) => handle(m).catch((e) => toast(e.message || 'Ошибка'));
 
-signInAnonymously(auth).then(() => {
-  authed = true;
+// Проверка связи с Firestore и понятная диагностика
+async function connect() {
+  if (!configured) { setNet('⚠ Не вставлен конфиг Firebase: откройте index.html и заполните блок firebaseConfig вверху скрипта', false); return; }
+  setNet('⏳ Подключение к Firebase…', null);
+  try {
+    await withTimeout(getDoc(ref('_ping')), 9000, 'timeout');
+  } catch (e) {
+    const c = e.code || e.message;
+    if (c === 'permission-denied') setNet('❌ Правила Firestore не опубликованы (Firestore Database → Rules → вставить правила → Publish)', false);
+    else setNet('❌ Нет связи с Firestore (' + c + '). Проверьте: создана ли база (Build → Firestore Database → Create database) и верен ли конфиг', false);
+    return;
+  }
+  ready = true; setNet('✅ Подключено — создайте комнату или войдите по коду', true);
   const start = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || qs.get('code');
   if (start) return send({ t: 'join', code: start });
-  const saved = localStorage.getItem(KEY);
+  const saved = store.get(KEY);
   if (saved) subscribe(saved);
-}).catch((e) => fail('Не удалось подключиться к Firebase (' + (e.code || e.message) + '). Проверьте, что включён Anonymous-вход.'));
+}
+connect();
 
 const VN = { short: 'Короткие нарды', long: 'Длинные нарды' };
 function show(id) { for (const s of ['lobby', 'wait', 'game']) $(s).classList.toggle('hide', s !== id); }
